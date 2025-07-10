@@ -1,0 +1,130 @@
+Build a complete application for managing construction projects with a strong focus on daily tracking, delay detection, cost impact analysis, and intelligent recommendations. The system should be divided into three core modules:
+
+---
+
+🧱 MODULE 1: PROJECT CREATION & RESOURCE SETUP
+
+Allow users to create and manage multiple construction projects. For each project, provide the following functionalities:
+
+1. Create New Project:
+   - Enter project name
+   - Choose location
+   - Select project start date and end date
+   - Set number of working days per month
+   - Choose a country calendar (to exclude government holidays)
+
+2. Add Resources to Project:
+   - Human Resources:
+     - Add multiple roles (e.g., Mason, Manager)
+     - For each role: enter role name, number of workers required, and daily cost per worker
+   - Materials:
+     - Add multiple materials (e.g., Concrete, Steel)
+     - For each material: enter name, total quantity required (in generic "units"), and cost per unit
+   - Equipment:
+     - Add multiple equipment types (e.g., Crane, Bulldozer)
+     - For each equipment: enter name, number of units required, and rental cost per day
+
+3. Miscellaneous Budget:
+   - Allow the user to enter additional categories and amounts (e.g., Security, Transport)
+
+4. Budget Calculation:
+   - Automatically calculate and display the total budget:
+     - Human Resource Budget
+     - Material Budget
+     - Equipment Budget
+     - Miscellaneous Budget
+   - The total budget must be displayed but not directly editable (except Miscellaneous).
+
+5. Edit Project:
+   - User can edit project metadata
+   - Can add, update, or remove resources (HR, materials, equipment)
+   - Cannot directly modify calculated budget fields
+
+---
+
+📅 MODULE 2: DAILY PROJECT REPORTING (DPR)
+
+Allow the user to submit a Daily Project Report (DPR) for each project, once per day. Each report should collect:
+
+1. Project Selection:
+   - Select from list of existing projects
+
+2. Location & Weather:
+   - Enter or confirm project location
+   - Automatically fetch and display real-time weather data for the location
+
+3. Resource Usage Tracking:
+   - Allow the user to **manually select** which resources were used today (from the project's defined resources)
+   - For each selected resource (HR role, material, equipment):
+     - Input “Number Required Today”
+     - Input “Number Available Today” or “Present Today”
+
+4. Project Progress:
+   - Enter today's percentage of project completed
+
+5. Budget Usage:
+   - Enter any extra budget used today (manual entry)
+   - Provide a reason or comment for extra budget usage
+
+6. AI Analysis (auto-generated):
+   - Calculate and display:
+     - Estimated delay for the day (based on shortages)
+     - Estimated cost impact
+     - Summary of resource gaps and deviations
+     - Recommendations to avoid delay (auto-generated)
+   - These insights should be saved along with the DPR
+
+7. Save DPR:
+   - Save this report with timestamp and project ID
+   - Do not allow re-submission for the same project and day
+
+---
+
+📊 MODULE 3: PROJECT OVERVIEW & ANALYTICS
+
+Provide a comprehensive project dashboard with visualizations and insights based on historical DPR data.
+
+1. Overview Dashboard (Per Project):
+   - Display project summary and metadata
+   - Show total number of days reported
+   - Show overall completion percentage
+   - Show total delay in days (calculated)
+   - Show total extra cost incurred
+   - Show breakdown of delay reasons (e.g., material shortage, bad weather)
+
+2. Charts & Graphs:
+   - Project progress over time (line chart)
+   - Budget usage vs actual usage (bar chart)
+   - Delay reasons frequency (pie chart)
+
+3. AI-Powered Recommendations:
+   - Analyze all DPR data and generate:
+     - Patterns of delays
+     - Suggestions to improve workflow or resource planning
+     - Critical risk areas and next steps
+
+---
+
+💬 MODULE 4: AI CHAT ASSISTANT (Optional but Ideal)
+
+Integrate an AI chat assistant that:
+1. Responds to natural language queries about the selected project
+2. Uses DPR data, project metadata, and weather info to answer questions like:
+   - “Why is my project delayed?”
+   - “What can I do to avoid tomorrow’s delay?”
+   - “Show me my cost overrun due to manpower shortage”
+3. Provides recommendations, explanations, and context-aware responses
+4. Chat history is saved per project
+
+---
+
+✅ GENERAL REQUIREMENTS:
+- User should be able to create, view, edit, and delete projects
+- Daily reports are stored per project and per date
+- AI-generated insights are stored along with the data
+- All user inputs should be validated before saving
+- System should be responsive and user-friendly
+- Charts and analytics must be visually clear and easy to interpret
+
+Build this as a fully working system — no placeholder logic or mock data. Every field and feature must work exactly as described above.
+
