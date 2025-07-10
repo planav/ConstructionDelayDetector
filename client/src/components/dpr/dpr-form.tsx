@@ -12,7 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { insertDailyProjectReportSchema } from "@shared/schema";
-import { Sun, Cloud, CloudRain, AlertCircle, DollarSign } from "lucide-react";
+import { Sun, Cloud, CloudRain, AlertCircle, DollarSign, Plus, X } from "lucide-react";
 import { z } from "zod";
 import type { Project, ProjectWithRelations } from "@shared/schema";
 
@@ -32,6 +32,7 @@ export default function DPRForm() {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [resourceUsage, setResourceUsage] = useState<ResourceUsage[]>([]);
   const [weatherData, setWeatherData] = useState<any>(null);
+  const [showResourceForm, setShowResourceForm] = useState(false);
 
   const { data: projects } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
@@ -92,47 +93,41 @@ export default function DPRForm() {
     setSelectedProjectId(id);
     form.setValue("projectId", id);
     setResourceUsage([]);
+    setShowResourceForm(false);
   };
 
   const initializeResourceUsage = () => {
     if (!selectedProject) return;
+    setShowResourceForm(true);
+  };
 
-    const usage: ResourceUsage[] = [];
-
-    // Add human resources
-    selectedProject.humanResources.forEach(hr => {
-      usage.push({
-        type: "human",
-        name: hr.roleName,
-        required: 0,
-        available: 0,
-        used: false,
+  const addResourceRow = (type: string, resourceName: string) => {
+    if (!resourceName) return;
+    
+    // Check if resource already exists
+    const exists = resourceUsage.some(r => r.type === type && r.name === resourceName);
+    if (exists) {
+      toast({
+        title: "Resource Already Added",
+        description: "This resource is already included in today's report.",
+        variant: "destructive",
       });
-    });
+      return;
+    }
 
-    // Add materials
-    selectedProject.materials.forEach(material => {
-      usage.push({
-        type: "material",
-        name: material.name,
-        required: 0,
-        available: 0,
-        used: false,
-      });
-    });
+    const newResource: ResourceUsage = {
+      type,
+      name: resourceName,
+      required: 0,
+      available: 0,
+      used: false,
+    };
+    setResourceUsage([...resourceUsage, newResource]);
+  };
 
-    // Add equipment
-    selectedProject.equipment.forEach(eq => {
-      usage.push({
-        type: "equipment",
-        name: eq.name,
-        required: 0,
-        available: 0,
-        used: false,
-      });
-    });
-
-    setResourceUsage(usage);
+  const removeResourceRow = (index: number) => {
+    const updated = resourceUsage.filter((_, i) => i !== index);
+    setResourceUsage(updated);
   };
 
   const updateResourceUsage = (index: number, field: string, value: any) => {
@@ -239,7 +234,7 @@ export default function DPRForm() {
             <div className="border-t border-gray-200 pt-6">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-lg font-semibold text-gray-900">Resource Usage</h4>
-                {resourceUsage.length === 0 && (
+                {!showResourceForm && resourceUsage.length === 0 && (
                   <Button
                     type="button"
                     onClick={initializeResourceUsage}
@@ -250,133 +245,145 @@ export default function DPRForm() {
                 )}
               </div>
 
-              {resourceUsage.length > 0 && (
+              {/* Dynamic Resource Selection Form */}
+              {showResourceForm && (
                 <div className="space-y-6">
-                  {/* Human Resources */}
-                  <div>
-                    <h5 className="text-md font-medium text-gray-700 mb-3">Human Resources</h5>
-                    <div className="space-y-3">
-                      {resourceUsage
-                        .filter(r => r.type === "human")
-                        .map((resource, index) => {
-                          const actualIndex = resourceUsage.findIndex(r => r === resource);
-                          return (
-                            <div key={actualIndex} className="grid grid-cols-1 md:grid-cols-4 gap-4 p-3 bg-gray-50 rounded-lg">
-                              <div className="font-medium text-gray-900">{resource.name}</div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Required Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.required}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "required", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Available Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.available}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "available", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  checked={resource.used}
-                                  onCheckedChange={(checked) => updateResourceUsage(actualIndex, "used", checked)}
-                                />
-                                <Label className="text-sm text-gray-600">Used Today</Label>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  {/* Add Human Resources */}
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Human Resources
+                    </h5>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <Select onValueChange={(value) => addResourceRow("human", value)}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select human resource" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {selectedProject.humanResources.map((hr) => (
+                              <SelectItem key={hr.id} value={hr.roleName}>
+                                {hr.roleName} ({hr.numberOfWorkers} workers)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Materials */}
-                  <div>
-                    <h5 className="text-md font-medium text-gray-700 mb-3">Materials</h5>
-                    <div className="space-y-3">
-                      {resourceUsage
-                        .filter(r => r.type === "material")
-                        .map((resource, index) => {
-                          const actualIndex = resourceUsage.findIndex(r => r === resource);
-                          return (
-                            <div key={actualIndex} className="grid grid-cols-1 md:grid-cols-4 gap-4 p-3 bg-gray-50 rounded-lg">
-                              <div className="font-medium text-gray-900">{resource.name}</div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Required Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.required}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "required", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Available Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.available}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "available", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  checked={resource.used}
-                                  onCheckedChange={(checked) => updateResourceUsage(actualIndex, "used", checked)}
-                                />
-                                <Label className="text-sm text-gray-600">Used Today</Label>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  {/* Add Materials */}
+                  <div className="bg-green-50 p-4 rounded-lg">
+                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Materials
+                    </h5>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <Select onValueChange={(value) => addResourceRow("material", value)}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select material" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {selectedProject.materials.map((material) => (
+                              <SelectItem key={material.id} value={material.name}>
+                                {material.name} ({material.totalQuantity} {material.unit})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Equipment */}
-                  <div>
-                    <h5 className="text-md font-medium text-gray-700 mb-3">Equipment</h5>
-                    <div className="space-y-3">
-                      {resourceUsage
-                        .filter(r => r.type === "equipment")
-                        .map((resource, index) => {
-                          const actualIndex = resourceUsage.findIndex(r => r === resource);
-                          return (
-                            <div key={actualIndex} className="grid grid-cols-1 md:grid-cols-4 gap-4 p-3 bg-gray-50 rounded-lg">
-                              <div className="font-medium text-gray-900">{resource.name}</div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Required Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.required}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "required", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-xs text-gray-600">Available Today</Label>
-                                <Input
-                                  type="number"
-                                  value={resource.available}
-                                  onChange={(e) => updateResourceUsage(actualIndex, "available", parseInt(e.target.value) || 0)}
-                                  className="text-sm"
-                                />
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  checked={resource.used}
-                                  onCheckedChange={(checked) => updateResourceUsage(actualIndex, "used", checked)}
-                                />
-                                <Label className="text-sm text-gray-600">Used Today</Label>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  {/* Add Equipment */}
+                  <div className="bg-orange-50 p-4 rounded-lg">
+                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Equipment
+                    </h5>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <Select onValueChange={(value) => addResourceRow("equipment", value)}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select equipment" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {selectedProject.equipment.map((eq) => (
+                              <SelectItem key={eq.id} value={eq.name}>
+                                {eq.name} ({eq.numberOfUnits} units)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Selected Resources Display */}
+              {resourceUsage.length > 0 && (
+                <div className="mt-6 space-y-4">
+                  <h5 className="text-md font-medium text-gray-700">Today's Resource Usage</h5>
+                  
+                  {resourceUsage.map((resource, index) => (
+                    <div key={index} className="grid grid-cols-1 md:grid-cols-6 gap-4 p-4 bg-gray-50 rounded-lg border">
+                      <div className="flex items-center">
+                        <div className="flex flex-col">
+                          <span className="text-xs text-gray-500 uppercase tracking-wide">
+                            {resource.type}
+                          </span>
+                          <span className="font-medium text-gray-900">{resource.name}</span>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <Label className="text-xs text-gray-600">Required Today</Label>
+                        <Input
+                          type="number"
+                          value={resource.required}
+                          onChange={(e) => updateResourceUsage(index, "required", parseInt(e.target.value) || 0)}
+                          className="text-sm"
+                          placeholder="0"
+                        />
+                      </div>
+                      
+                      <div>
+                        <Label className="text-xs text-gray-600">Available Today</Label>
+                        <Input
+                          type="number"
+                          value={resource.available}
+                          onChange={(e) => updateResourceUsage(index, "available", parseInt(e.target.value) || 0)}
+                          className="text-sm"
+                          placeholder="0"
+                        />
+                      </div>
+                      
+                      <div className="flex items-end">
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            checked={resource.used}
+                            onCheckedChange={(checked) => updateResourceUsage(index, "used", checked)}
+                          />
+                          <Label className="text-sm text-gray-600">Used Today</Label>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => removeResourceRow(index)}
+                          className="w-full"
+                        >
+                          <X className="h-4 w-4 mr-1" />
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
