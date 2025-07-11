@@ -33,7 +33,18 @@ export default function ProjectForm() {
   const [miscItems, setMiscItems] = useState<Resource[]>([]);
 
   const form = useForm<FormData>({
-    resolver: zodResolver(insertProjectSchema),
+    resolver: zodResolver(insertProjectSchema.refine(
+      (data) => {
+        if (data.startDate && data.endDate) {
+          return new Date(data.startDate) < new Date(data.endDate);
+        }
+        return true;
+      },
+      {
+        message: "End date must be after start date",
+        path: ["endDate"],
+      }
+    )),
     defaultValues: {
       name: "",
       location: "",
@@ -53,13 +64,97 @@ export default function ProjectForm() {
 
   const createProjectMutation = useMutation({
     mutationFn: async (data: FormData) => {
-      const response = await apiRequest("POST", "/api/projects", data);
-      return response.json();
+      // Create the project first
+      const projectResponse = await apiRequest("POST", "/api/projects", data);
+      const project = await projectResponse.json();
+
+      // Create all resources for the project
+      const promises = [];
+
+      // Create human resources
+      for (const hr of humanResources) {
+        if (hr.name.trim() && hr.value1.trim() && hr.value2.trim() &&
+            parseInt(hr.value1) > 0 && parseFloat(hr.value2) > 0) {
+          promises.push(
+            apiRequest("POST", `/api/projects/${project.id}/human-resources`, {
+              roleName: hr.name.trim(),
+              numberOfWorkers: parseInt(hr.value1),
+              dailyCostPerWorker: hr.value2.trim(),
+            })
+          );
+        }
+      }
+
+      // Create materials
+      for (const material of materials) {
+        if (material.name.trim() && material.value1.trim() && material.value2.trim() &&
+            parseFloat(material.value1) > 0 && parseFloat(material.value2) > 0) {
+          promises.push(
+            apiRequest("POST", `/api/projects/${project.id}/materials`, {
+              name: material.name.trim(),
+              totalQuantity: material.value1.trim(),
+              costPerUnit: material.value2.trim(),
+            })
+          );
+        }
+      }
+
+      // Create equipment
+      for (const eq of equipment) {
+        if (eq.name.trim() && eq.value1.trim() && eq.value2.trim() &&
+            parseInt(eq.value1) > 0 && parseFloat(eq.value2) > 0) {
+          promises.push(
+            apiRequest("POST", `/api/projects/${project.id}/equipment`, {
+              name: eq.name.trim(),
+              numberOfUnits: parseInt(eq.value1),
+              rentalCostPerDay: eq.value2.trim(),
+            })
+          );
+        }
+      }
+
+      // Create miscellaneous items
+      for (const misc of miscItems) {
+        if (misc.name.trim() && misc.value1.trim() && parseFloat(misc.value1) > 0) {
+          promises.push(
+            apiRequest("POST", `/api/projects/${project.id}/miscellaneous-items`, {
+              category: misc.name.trim(),
+              amount: misc.value1.trim(),
+            })
+          );
+        }
+      }
+
+      // Wait for all resources to be created
+      const results = await Promise.allSettled(promises);
+
+      // Count successful and failed resource creations
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+
+      if (failed > 0) {
+        console.warn(`${failed} resources failed to create out of ${results.length} total`);
+      }
+
+      return { ...project, resourceStats: { successful, failed, total: results.length } };
     },
-    onSuccess: (project) => {
+    onSuccess: (result: any) => {
+      const project = result;
+      let message = `${project.name} has been created successfully.`;
+
+      if (project.resourceStats) {
+        const { successful, failed, total } = project.resourceStats;
+        if (failed > 0) {
+          message += ` ${successful}/${total} resources were added successfully.`;
+        } else if (total > 0) {
+          message += ` All ${total} resources were added successfully.`;
+        }
+      }
+
       toast({
         title: "Project Created",
-        description: `${project.name} has been created successfully.`,
+        description: message,
+        variant: project.resourceStats?.failed > 0 ? "default" : "default",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       form.reset();
@@ -68,10 +163,11 @@ export default function ProjectForm() {
       setEquipment([]);
       setMiscItems([]);
     },
-    onError: (error) => {
+    onError: (error: any) => {
+      console.error("Project creation error:", error);
       toast({
         title: "Error",
-        description: "Failed to create project. Please try again.",
+        description: error.message || "Failed to create project. Please try again.",
         variant: "destructive",
       });
     },
@@ -217,6 +313,11 @@ export default function ProjectForm() {
                 type="date"
                 {...form.register("endDate")}
               />
+              {form.formState.errors.endDate && (
+                <p className="text-sm text-red-600 mt-1">
+                  {form.formState.errors.endDate.message}
+                </p>
+              )}
             </div>
             <div>
               <Label htmlFor="workingDaysPerMonth">Working Days per Month</Label>

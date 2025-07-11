@@ -12,21 +12,26 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { insertDailyProjectReportSchema } from "@shared/schema";
-import { Sun, Cloud, CloudRain, AlertCircle, DollarSign, Plus, X } from "lucide-react";
+import { Sun, Cloud, CloudRain, CloudSnow, Wind, Eye, AlertCircle, DollarSign, Plus, X } from "lucide-react";
 import { z } from "zod";
 import type { Project, ProjectWithRelations } from "@shared/schema";
 
 type FormData = z.infer<typeof insertDailyProjectReportSchema>;
 
 interface ResourceUsage {
+  resourceId: number;
   type: string;
   name: string;
-  required: number;
-  available: number;
+  required: string;
+  available: string;
   used: boolean;
 }
 
-export default function DPRForm() {
+interface DPRFormProps {
+  onProjectSelect?: (projectId: number) => void;
+}
+
+export default function DPRForm({ onProjectSelect }: DPRFormProps = {}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -43,8 +48,63 @@ export default function DPRForm() {
     enabled: !!selectedProjectId,
   });
 
+  // Check for existing reports for the selected date
+  const { data: existingReports } = useQuery({
+    queryKey: ["/api/projects", selectedProjectId, "daily-reports"],
+    enabled: !!selectedProjectId,
+  });
+
   const form = useForm<FormData>({
-    resolver: zodResolver(insertDailyProjectReportSchema),
+    resolver: zodResolver(insertDailyProjectReportSchema.refine(
+      (data) => {
+        // Check if report date is not before project start date
+        if (selectedProject && data.reportDate) {
+          const reportDate = new Date(data.reportDate);
+          const projectStartDate = new Date(selectedProject.startDate);
+          if (reportDate < projectStartDate) {
+            return false;
+          }
+        }
+
+        // Check if report for this date already exists
+        if (existingReports && data.reportDate) {
+          const reportExists = existingReports.some((report: any) =>
+            report.reportDate === data.reportDate
+          );
+          if (reportExists) {
+            return false;
+          }
+        }
+
+        return true;
+      },
+      (data) => {
+        if (selectedProject && data.reportDate) {
+          const reportDate = new Date(data.reportDate);
+          const projectStartDate = new Date(selectedProject.startDate);
+          if (reportDate < projectStartDate) {
+            return {
+              message: `Report date cannot be before project start date (${selectedProject.startDate})`,
+              path: ["reportDate"],
+            };
+          }
+        }
+
+        if (existingReports && data.reportDate) {
+          const reportExists = existingReports.some((report: any) =>
+            report.reportDate === data.reportDate
+          );
+          if (reportExists) {
+            return {
+              message: "A report for this date already exists",
+              path: ["reportDate"],
+            };
+          }
+        }
+
+        return { message: "Invalid date", path: ["reportDate"] };
+      }
+    )),
     defaultValues: {
       projectId: 0,
       reportDate: new Date().toISOString().split('T')[0],
@@ -64,9 +124,16 @@ export default function DPRForm() {
 
   const createDPRMutation = useMutation({
     mutationFn: async (data: FormData) => {
+      // Convert resource usage string values to numbers for API
+      const processedResourceUsage = resourceUsage.map(resource => ({
+        ...resource,
+        required: parseFloat(resource.required) || 0,
+        available: parseFloat(resource.available) || 0,
+      }));
+
       const response = await apiRequest("POST", `/api/projects/${selectedProjectId}/daily-reports`, {
         ...data,
-        resourceUsage,
+        resourceUsage: processedResourceUsage,
       });
       return response.json();
     },
@@ -94,35 +161,74 @@ export default function DPRForm() {
     form.setValue("projectId", id);
     setResourceUsage([]);
     setShowResourceForm(false);
+    onProjectSelect?.(id);
   };
 
   const initializeResourceUsage = () => {
-    if (!selectedProject) return;
-    setShowResourceForm(true);
-  };
-
-  const addResourceRow = (type: string, resourceName: string) => {
-    if (!resourceName) return;
-    
-    // Check if resource already exists
-    const exists = resourceUsage.some(r => r.type === type && r.name === resourceName);
-    if (exists) {
+    if (!selectedProject) {
       toast({
-        title: "Resource Already Added",
-        description: "This resource is already included in today's report.",
+        title: "No Project Selected",
+        description: "Please select a project first.",
         variant: "destructive",
       });
       return;
     }
 
-    const newResource: ResourceUsage = {
-      type,
-      name: resourceName,
-      required: 0,
-      available: 0,
-      used: false,
-    };
-    setResourceUsage([...resourceUsage, newResource]);
+    // Load all resources from the selected project
+    const allResources: ResourceUsage[] = [];
+
+    // Add human resources
+    selectedProject.humanResources.forEach((hr) => {
+      allResources.push({
+        resourceId: hr.id,
+        type: "human",
+        name: hr.roleName,
+        required: "",
+        available: "",
+        used: false,
+      });
+    });
+
+    // Add materials
+    selectedProject.materials.forEach((material) => {
+      allResources.push({
+        resourceId: material.id,
+        type: "material",
+        name: material.name,
+        required: "",
+        available: "",
+        used: false,
+      });
+    });
+
+    // Add equipment
+    selectedProject.equipment.forEach((eq) => {
+      allResources.push({
+        resourceId: eq.id,
+        type: "equipment",
+        name: eq.name,
+        required: "",
+        available: "",
+        used: false,
+      });
+    });
+
+    if (allResources.length === 0) {
+      toast({
+        title: "No Resources Available",
+        description: "No resources available. Please edit the project and add them first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setResourceUsage(allResources);
+    setShowResourceForm(true);
+
+    toast({
+      title: "Resources Loaded",
+      description: `Loaded ${allResources.length} resources from the project.`,
+    });
   };
 
   const removeResourceRow = (index: number) => {
@@ -152,13 +258,25 @@ export default function DPRForm() {
   const getWeatherIcon = (condition: string) => {
     switch (condition?.toLowerCase()) {
       case "clear":
-        return <Sun className="h-6 w-6 text-yellow-500" />;
+        return <Sun className="h-8 w-8 text-yellow-500" />;
       case "clouds":
-        return <Cloud className="h-6 w-6 text-gray-500" />;
+      case "cloudy":
+        return <Cloud className="h-8 w-8 text-gray-500" />;
       case "rain":
-        return <CloudRain className="h-6 w-6 text-blue-500" />;
+      case "drizzle":
+        return <CloudRain className="h-8 w-8 text-blue-500" />;
+      case "snow":
+        return <CloudSnow className="h-8 w-8 text-blue-300" />;
+      case "mist":
+      case "fog":
+      case "haze":
+        return <Eye className="h-8 w-8 text-gray-400" />;
+      case "thunderstorm":
+        return <CloudRain className="h-8 w-8 text-purple-600" />;
+      case "wind":
+        return <Wind className="h-8 w-8 text-gray-600" />;
       default:
-        return <Sun className="h-6 w-6 text-yellow-500" />;
+        return <Sun className="h-8 w-8 text-yellow-500" />;
     }
   };
 
@@ -196,6 +314,11 @@ export default function DPRForm() {
                 type="date"
                 {...form.register("reportDate")}
               />
+              {form.formState.errors.reportDate && (
+                <p className="text-sm text-red-600 mt-1">
+                  {form.formState.errors.reportDate.message}
+                </p>
+              )}
             </div>
           </div>
 
@@ -212,18 +335,46 @@ export default function DPRForm() {
                 </div>
                 <div>
                   <Label>Weather Conditions</Label>
-                  <div className="flex items-center space-x-4 p-3 bg-gray-50 rounded-lg">
-                    {weatherQuery.data && getWeatherIcon(weatherQuery.data.condition)}
-                    <div>
-                      <div className="font-medium text-gray-900">
-                        {weatherQuery.data?.condition || "Loading..."}
-                      </div>
-                      <div className="text-sm text-gray-600">
-                        {weatherQuery.data?.temperature || "--"}°F,{" "}
-                        {weatherQuery.data?.description || "Loading weather..."}
+                  {weatherQuery.isLoading ? (
+                    <div className="flex items-center justify-center p-4 bg-gray-50 rounded-lg">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                      <span className="ml-2 text-gray-600">Loading weather...</span>
+                    </div>
+                  ) : weatherQuery.error ? (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="text-red-600 text-sm">
+                        Unable to load weather data
                       </div>
                     </div>
-                  </div>
+                  ) : weatherQuery.data ? (
+                    <div className="p-4 bg-gradient-to-r from-blue-50 to-sky-50 rounded-lg border border-blue-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          {getWeatherIcon(weatherQuery.data.condition)}
+                          <div>
+                            <div className="font-semibold text-gray-900 text-lg">
+                              {weatherQuery.data.temperature}°F
+                            </div>
+                            <div className="text-sm text-gray-600 capitalize">
+                              {weatherQuery.data.description}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm text-gray-600">
+                            <div>Humidity: {weatherQuery.data.humidity}%</div>
+                            <div>Wind: {weatherQuery.data.windSpeed} mph</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-gray-50 rounded-lg">
+                      <div className="text-gray-600 text-sm">
+                        Weather data not available
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -245,80 +396,11 @@ export default function DPRForm() {
                 )}
               </div>
 
-              {/* Dynamic Resource Selection Form */}
-              {showResourceForm && (
-                <div className="space-y-6">
-                  {/* Add Human Resources */}
-                  <div className="bg-blue-50 p-4 rounded-lg">
-                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Human Resources
-                    </h5>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <Select onValueChange={(value) => addResourceRow("human", value)}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select human resource" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {selectedProject.humanResources.map((hr) => (
-                              <SelectItem key={hr.id} value={hr.roleName}>
-                                {hr.roleName} ({hr.numberOfWorkers} workers)
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Add Materials */}
-                  <div className="bg-green-50 p-4 rounded-lg">
-                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Materials
-                    </h5>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <Select onValueChange={(value) => addResourceRow("material", value)}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select material" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {selectedProject.materials.map((material) => (
-                              <SelectItem key={material.id} value={material.name}>
-                                {material.name} ({material.totalQuantity} {material.unit})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Add Equipment */}
-                  <div className="bg-orange-50 p-4 rounded-lg">
-                    <h5 className="text-md font-medium text-gray-700 mb-3 flex items-center">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Equipment
-                    </h5>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <Select onValueChange={(value) => addResourceRow("equipment", value)}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select equipment" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {selectedProject.equipment.map((eq) => (
-                              <SelectItem key={eq.id} value={eq.name}>
-                                {eq.name} ({eq.numberOfUnits} units)
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
+              {/* Resource Loading Status */}
+              {showResourceForm && resourceUsage.length === 0 && (
+                <div className="text-center py-8 text-gray-500">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                  <p>Loading resources...</p>
                 </div>
               )}
 
@@ -328,11 +410,11 @@ export default function DPRForm() {
                   <h5 className="text-md font-medium text-gray-700">Today's Resource Usage</h5>
                   
                   {resourceUsage.map((resource, index) => (
-                    <div key={index} className="grid grid-cols-1 md:grid-cols-6 gap-4 p-4 bg-gray-50 rounded-lg border">
+                    <div key={`${resource.type}-${resource.resourceId}`} className="grid grid-cols-1 md:grid-cols-6 gap-4 p-4 bg-gray-50 rounded-lg border">
                       <div className="flex items-center">
                         <div className="flex flex-col">
                           <span className="text-xs text-gray-500 uppercase tracking-wide">
-                            {resource.type}
+                            {resource.type} (ID: {resource.resourceId})
                           </span>
                           <span className="font-medium text-gray-900">{resource.name}</span>
                         </div>
@@ -343,20 +425,20 @@ export default function DPRForm() {
                         <Input
                           type="number"
                           value={resource.required}
-                          onChange={(e) => updateResourceUsage(index, "required", parseInt(e.target.value) || 0)}
+                          onChange={(e) => updateResourceUsage(index, "required", e.target.value)}
                           className="text-sm"
-                          placeholder="0"
+                          placeholder="Enter quantity"
                         />
                       </div>
-                      
+
                       <div>
                         <Label className="text-xs text-gray-600">Available Today</Label>
                         <Input
                           type="number"
                           value={resource.available}
-                          onChange={(e) => updateResourceUsage(index, "available", parseInt(e.target.value) || 0)}
+                          onChange={(e) => updateResourceUsage(index, "available", e.target.value)}
                           className="text-sm"
-                          placeholder="0"
+                          placeholder="Enter quantity"
                         />
                       </div>
                       
@@ -408,7 +490,11 @@ export default function DPRForm() {
                 <Input
                   id="currentProgress"
                   type="number"
-                  value={parseFloat(selectedProject?.currentProgress || "0")}
+                  value={
+                    selectedProject
+                      ? Math.min(100, parseFloat(selectedProject.currentProgress || "0") + parseFloat(form.watch("progressPercentage") || "0"))
+                      : 0
+                  }
                   readOnly
                   className="bg-gray-50"
                 />

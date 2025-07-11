@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProjectSchema, insertHumanResourceSchema, insertMaterialSchema, insertEquipmentSchema, insertMiscellaneousItemSchema, insertDailyProjectReportSchema, insertChatMessageSchema } from "@shared/schema";
 import { z } from "zod";
-import { analyzeProjectDelayAndCost, generateAIRecommendations, handleChatMessage } from "./services/openai";
+import { generateAIAnalysis } from "./services/openai";
 import { getWeatherData } from "./services/weather";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -13,6 +13,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const projects = await storage.getProjects();
       res.json(projects);
     } catch (error) {
+      console.error("Error fetching projects:", error);
       res.status(500).json({ error: "Failed to fetch projects" });
     }
   });
@@ -36,6 +37,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const project = await storage.createProject(validatedData);
       res.status(201).json(project);
     } catch (error) {
+      console.error("Error creating project:", error);
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: "Invalid project data", details: error.errors });
       }
@@ -306,14 +308,87 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const weatherData = await getWeatherData(project.location);
       
+      // Get ML prediction from trained model
+      let mlPrediction = null;
+      try {
+        const mlResponse = await fetch('http://localhost:5001/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: {
+              currentProgress: project.currentProgress || 0,
+              startDate: project.startDate,
+              endDate: project.endDate,
+              totalBudget: project.totalBudget,
+              location: project.location,
+              humanResources: project.humanResources || [],
+              materials: project.materials || [],
+              equipment: project.equipment || []
+            },
+            resourceUsage: req.body.resourceUsage
+          })
+        });
+
+        if (mlResponse.ok) {
+          const mlData = await mlResponse.json();
+          mlPrediction = mlData.prediction;
+        }
+      } catch (error) {
+        console.log("ML API not available, using AI analysis only");
+      }
+
       // Generate AI analysis
       const aiAnalysis = await analyzeProjectDelayAndCost(project, req.body.resourceUsage);
+
+      // Combine ML and AI analysis
+      const enhancedAnalysis = {
+        ...aiAnalysis,
+        ml_prediction: mlPrediction ? {
+          predicted_delay_days: mlPrediction.delay_days,
+          predicted_additional_cost: mlPrediction.additional_cost_usd,
+          confidence_percentage: mlPrediction.confidence_percentage,
+          confidence_interval: mlPrediction.confidence_interval,
+          model_used: 'trained_ml_model',
+          data_source: 'real_construction_data'
+        } : {
+          predicted_delay_days: aiAnalysis.estimatedDelayDays,
+          confidence_percentage: aiAnalysis.confidenceLevel,
+          model_used: 'ai_heuristic_fallback',
+          data_source: 'ai_analysis'
+        },
+        ai_analysis: {
+          cost_impact: {
+            total_additional_cost: mlPrediction?.additional_cost_usd || aiAnalysis.costImpact,
+            cost_breakdown: aiAnalysis.budgetBreakdown,
+            budget_reallocation: aiAnalysis.budgetReallocation
+          },
+          action_plan: {
+            immediate_actions: aiAnalysis.recommendations.immediate,
+            short_term_strategies: aiAnalysis.recommendations.shortTerm,
+            long_term_improvements: aiAnalysis.recommendations.longTerm
+          },
+          resource_optimization: {
+            critical_bottlenecks: aiAnalysis.resourceOptimization.criticalBottlenecks,
+            efficiency_improvements: aiAnalysis.resourceOptimization.efficiencyImprovements,
+            specific_adjustments: aiAnalysis.resourceOptimization.specificAdjustments
+          },
+          timeline_recovery: aiAnalysis.timelineRecoveryPlan,
+          risk_assessment: {
+            current_risk_level: aiAnalysis.riskLevel,
+            risk_factors: aiAnalysis.delayReasons,
+            mitigation_strategies: aiAnalysis.recommendations.immediate
+          }
+        },
+        hybrid_confidence: mlPrediction?.confidence_percentage || aiAnalysis.confidenceLevel,
+        analysis_timestamp: new Date().toISOString(),
+        ml_available: mlPrediction !== null
+      };
       
       const validatedData = insertDailyProjectReportSchema.parse({
         ...req.body,
         projectId,
         weatherData,
-        aiAnalysis,
+        aiAnalysis: enhancedAnalysis,
       });
 
       const report = await storage.createDailyProjectReport(validatedData);
@@ -366,14 +441,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isFromUser: true,
       });
 
-      // Get project data for AI context
+      // Get ALL project data for comprehensive AI context
       const project = await storage.getProject(projectId);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
 
-      // Generate AI response
-      const aiResponse = await handleChatMessage(message, project);
+      // Get complete project context
+      const dailyReports = await storage.getDailyProjectReports(projectId);
+      const chatHistory = await storage.getChatMessages(projectId);
+
+      // Get current weather data
+      let weatherData = null;
+      try {
+        const weatherResponse = await fetch(`http://localhost:8080/api/weather/${encodeURIComponent(project.location)}`);
+        if (weatherResponse.ok) {
+          weatherData = await weatherResponse.json();
+        }
+      } catch (error) {
+        console.log("Weather data not available for chat");
+      }
+
+      // Get ML prediction if available
+      let mlPrediction = null;
+      try {
+        const mlResponse = await fetch('http://localhost:5001/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: {
+              currentProgress: project.currentProgress || 0,
+              startDate: project.startDate,
+              endDate: project.endDate,
+              totalBudget: project.totalBudget,
+              location: project.location,
+              humanResources: project.humanResources || [],
+              materials: project.materials || [],
+              equipment: project.equipment || []
+            }
+          })
+        });
+
+        if (mlResponse.ok) {
+          const mlData = await mlResponse.json();
+          mlPrediction = mlData.prediction;
+        }
+      } catch (error) {
+        console.log("ML prediction not available for chat");
+      }
+
+      // Generate AI response with complete context
+      const aiResponse = await handleChatMessage(message, project, {
+        dailyReports,
+        chatHistory: chatHistory.slice(-10), // Last 10 messages for context
+        weatherData,
+        mlPrediction
+      });
 
       // Save AI response
       const aiMessage = await storage.createChatMessage({
@@ -388,22 +511,339 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Analytics endpoints
+  // Enhanced AI Analytics endpoint
+  app.get("/api/analytics/projects/:projectId/ai-analysis", async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.projectId);
+      const project = await storage.getProject(projectId);
+
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const reports = await storage.getDailyProjectReports(projectId);
+
+      // Get the latest AI analysis from the most recent report
+      const latestReport = reports[0];
+      let aiAnalysis = null;
+
+      if (latestReport && latestReport.aiAnalysis) {
+        aiAnalysis = latestReport.aiAnalysis;
+      } else {
+        // Generate fresh analysis if no recent analysis exists
+        aiAnalysis = await analyzeProjectDelayAndCost(project, []);
+      }
+
+      res.json({
+        projectId,
+        projectName: project.name,
+        analysisDate: new Date().toISOString(),
+        analysis: aiAnalysis,
+        dataSource: latestReport ? 'latest_report' : 'fresh_analysis',
+        reportCount: reports.length
+      });
+    } catch (error) {
+      console.error("Error fetching AI analysis:", error);
+      res.status(500).json({ error: "Failed to fetch AI analysis" });
+    }
+  });
+
+  // Risk Assessment endpoint
+  app.get("/api/analytics/projects/:projectId/risk-assessment", async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.projectId);
+      const project = await storage.getProject(projectId);
+
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const reports = await storage.getDailyProjectReports(projectId);
+
+      // Calculate risk metrics
+      const startDate = new Date(project.startDate);
+      const endDate = new Date(project.endDate);
+      const currentDate = new Date();
+
+      const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      const elapsedDays = Math.ceil((currentDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      const remainingDays = Math.max(0, totalDays - elapsedDays);
+
+      const expectedProgress = Math.min(100, Math.max(0, (elapsedDays / totalDays) * 100));
+      const actualProgress = parseFloat(project.currentProgress || "0");
+      const progressVariance = actualProgress - expectedProgress;
+
+      // Risk level calculation
+      let riskLevel = "LOW";
+      let riskScore = 0;
+      const riskFactors = [];
+
+      if (progressVariance < -20) {
+        riskLevel = "CRITICAL";
+        riskScore = 90;
+        riskFactors.push("Severely behind schedule");
+      } else if (progressVariance < -10) {
+        riskLevel = "HIGH";
+        riskScore = 70;
+        riskFactors.push("Behind schedule");
+      } else if (progressVariance < -5) {
+        riskLevel = "MEDIUM";
+        riskScore = 50;
+        riskFactors.push("Slightly behind schedule");
+      } else {
+        riskLevel = "LOW";
+        riskScore = 20;
+      }
+
+      // Budget risk
+      const budget = parseFloat(project.totalBudget);
+      if (budget > 10000000) {
+        riskScore += 10;
+        riskFactors.push("High-value project");
+      }
+
+      // Timeline pressure
+      if (remainingDays < 30 && actualProgress < 80) {
+        riskScore += 20;
+        riskFactors.push("Timeline pressure");
+      }
+
+      // Resource complexity
+      const totalResources = (project.humanResources?.length || 0) +
+                            (project.materials?.length || 0) +
+                            (project.equipment?.length || 0);
+      if (totalResources > 15) {
+        riskScore += 10;
+        riskFactors.push("High resource complexity");
+      }
+
+      // Recent issues from DPRs
+      const recentIssues = reports.slice(0, 5).filter(r =>
+        r.extraBudgetReason && r.extraBudgetReason.trim().length > 0
+      );
+      if (recentIssues.length > 2) {
+        riskScore += 15;
+        riskFactors.push("Frequent issues reported");
+      }
+
+      riskScore = Math.min(100, riskScore);
+
+      // Enhanced risk assessment with detailed breakdown
+      const timelineRisk = remainingDays < 30 && actualProgress < 80 ? "HIGH" :
+                          remainingDays < 60 && actualProgress < 60 ? "MEDIUM" : "LOW";
+      const budgetRisk = budget > 10000000 ? "HIGH" : budget > 5000000 ? "MEDIUM" : "LOW";
+      const resourceRisk = totalResources > 15 ? "HIGH" : totalResources > 8 ? "MEDIUM" : "LOW";
+      const qualityRisk = recentIssues.length > 2 ? "HIGH" : recentIssues.length > 0 ? "MEDIUM" : "LOW";
+      const weatherRisk = project.location?.toLowerCase().includes('mumbai') ||
+                         project.location?.toLowerCase().includes('chennai') ? "MEDIUM" : "LOW";
+
+      // Calculate predictions
+      const predictedCompletionDate = new Date(endDate);
+      if (progressVariance < -10) {
+        predictedCompletionDate.setDate(predictedCompletionDate.getDate() + Math.abs(progressVariance));
+      }
+
+      const extraBudgetUsed = reports.reduce((sum, r) => sum + parseFloat(r.extraBudgetUsed || "0"), 0);
+      const predictedFinalBudget = budget + extraBudgetUsed + (budget * 0.1); // 10% buffer
+
+      const successProbability = Math.max(20, 100 - riskScore);
+
+      const riskAssessment = {
+        riskLevel,
+        riskScore,
+        riskFactors,
+        overallRisk: riskLevel,
+        progressVariance: progressVariance.toFixed(1),
+        timelineStatus: remainingDays < 30 ? "URGENT" : remainingDays < 60 ? "ATTENTION" : "NORMAL",
+        budgetRisk,
+        resourceRisk,
+        riskFactorsDetailed: {
+          timelineRisk: {
+            level: timelineRisk,
+            score: timelineRisk === "HIGH" ? 80 : timelineRisk === "MEDIUM" ? 50 : 20,
+            description: `${remainingDays} days remaining, ${actualProgress}% complete`
+          },
+          budgetRisk: {
+            level: budgetRisk,
+            score: budgetRisk === "HIGH" ? 80 : budgetRisk === "MEDIUM" ? 50 : 20,
+            description: `$${budget.toLocaleString()} total budget, $${extraBudgetUsed.toLocaleString()} extra used`
+          },
+          resourceRisk: {
+            level: resourceRisk,
+            score: resourceRisk === "HIGH" ? 80 : resourceRisk === "MEDIUM" ? 50 : 20,
+            description: `${totalResources} total resources across HR, materials, equipment`
+          },
+          qualityRisk: {
+            level: qualityRisk,
+            score: qualityRisk === "HIGH" ? 80 : qualityRisk === "MEDIUM" ? 50 : 20,
+            description: `${recentIssues.length} issues reported in recent DPRs`
+          },
+          weatherRisk: {
+            level: weatherRisk,
+            score: weatherRisk === "HIGH" ? 80 : weatherRisk === "MEDIUM" ? 50 : 20,
+            description: `Location: ${project.location} - weather impact assessment`
+          }
+        },
+        predictions: {
+          completionDate: predictedCompletionDate.toISOString().split('T')[0],
+          confidence: Math.max(60, 100 - Math.abs(progressVariance)),
+          finalBudget: Math.round(predictedFinalBudget),
+          budgetConfidence: extraBudgetUsed > 0 ? 70 : 85,
+          successProbability: Math.round(successProbability)
+        },
+        recommendations: [
+          riskLevel === "CRITICAL" ? "Immediate intervention required" :
+          riskLevel === "HIGH" ? "Implement corrective measures" :
+          riskLevel === "MEDIUM" ? "Monitor closely" : "Continue current approach",
+          remainingDays < 30 ? "Accelerate critical activities" : "Maintain current pace",
+          recentIssues.length > 2 ? "Address recurring issues" : "Monitor for new issues"
+        ]
+      };
+
+      res.json(riskAssessment);
+    } catch (error) {
+      console.error("Error fetching risk assessment:", error);
+      res.status(500).json({ error: "Failed to fetch risk assessment" });
+    }
+  });
+
+  // Performance Trends endpoint
+  app.get("/api/analytics/projects/:projectId/performance-trends", async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.projectId);
+      const project = await storage.getProject(projectId);
+
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const reports = await storage.getDailyProjectReports(projectId);
+
+      // Calculate performance trends
+      const progressTrend = reports.map(report => ({
+        date: report.reportDate,
+        progress: parseFloat(report.progressPercentage || "0"),
+        budgetUsed: parseFloat(report.extraBudgetUsed || "0"),
+        issues: report.extraBudgetReason ? 1 : 0
+      })).reverse(); // Reverse to get chronological order
+
+      // Calculate velocity (progress per day)
+      const velocityTrend = [];
+      for (let i = 1; i < progressTrend.length; i++) {
+        const current = progressTrend[i];
+        const previous = progressTrend[i - 1];
+        const daysDiff = Math.max(1, Math.ceil(
+          (new Date(current.date).getTime() - new Date(previous.date).getTime()) / (1000 * 60 * 60 * 24)
+        ));
+        const velocity = (current.progress - previous.progress) / daysDiff;
+
+        velocityTrend.push({
+          date: current.date,
+          velocity: Math.max(0, velocity),
+          efficiency: velocity > 1 ? "HIGH" : velocity > 0.5 ? "MEDIUM" : "LOW"
+        });
+      }
+
+      // Budget trend
+      const budgetTrend = progressTrend.map(point => ({
+        date: point.date,
+        cumulativeBudgetUsed: point.budgetUsed,
+        budgetEfficiency: point.progress > 0 ? (point.progress / Math.max(point.budgetUsed, 1)) * 100 : 0
+      }));
+
+      // Quality trend (issues frequency)
+      const qualityTrend = progressTrend.map(point => ({
+        date: point.date,
+        issueCount: point.issues,
+        qualityScore: point.issues === 0 ? 100 : 70 // Simple quality scoring
+      }));
+
+      // Overall performance score
+      const avgVelocity = velocityTrend.length > 0 ?
+        velocityTrend.reduce((sum, v) => sum + v.velocity, 0) / velocityTrend.length : 0;
+      const avgQuality = qualityTrend.length > 0 ?
+        qualityTrend.reduce((sum, q) => sum + q.qualityScore, 0) / qualityTrend.length : 100;
+
+      const performanceScore = Math.round((avgVelocity * 30 + avgQuality * 0.7));
+
+      // Enhanced performance trends with detailed breakdowns
+      const totalBudgetSpent = progressTrend.reduce((sum, p) => sum + p.budgetUsed, 0);
+      const avgDailySpend = reports.length > 0 ? totalBudgetSpent / reports.length : 0;
+
+      // Resource utilization calculation
+      const totalResources = (project.humanResources?.length || 0) +
+                            (project.materials?.length || 0) +
+                            (project.equipment?.length || 0);
+      const resourceUtilization = totalResources > 0 ? Math.min(100, (reports.length * 5)) : 0;
+
+      // Weather impact simulation
+      const weatherImpactDays = Math.floor(reports.length * 0.2); // 20% weather impact
+      const weatherImpactRate = reports.length > 0 ? (weatherImpactDays / reports.length) * 100 : 0;
+
+      const performanceTrends = {
+        performanceScore: Math.min(100, performanceScore),
+        progressTrend: {
+          data: progressTrend,
+          trend: velocityTrend.length > 2 ?
+            (velocityTrend[velocityTrend.length - 1].velocity > velocityTrend[0].velocity ? "improving" : "declining") : "stable",
+          velocity: avgVelocity.toFixed(2)
+        },
+        velocityTrend,
+        budgetTrend: {
+          data: budgetTrend,
+          totalSpent: Math.round(totalBudgetSpent),
+          averageDailySpend: Math.round(avgDailySpend),
+          trend: totalBudgetSpent > parseFloat(project.totalBudget) * 0.8 ? "high" : "normal"
+        },
+        qualityTrend,
+        resourceUtilizationTrend: {
+          averageUtilization: Math.round(resourceUtilization),
+          trend: resourceUtilization > 80 ? "high" : resourceUtilization > 50 ? "medium" : "low",
+          totalResources: totalResources
+        },
+        weatherImpactTrend: {
+          impactRate: Math.round(weatherImpactRate),
+          adverseWeatherDays: weatherImpactDays,
+          totalDays: reports.length,
+          trend: weatherImpactRate > 30 ? "high" : weatherImpactRate > 15 ? "medium" : "low"
+        },
+        summary: {
+          averageVelocity: avgVelocity.toFixed(2),
+          averageQuality: avgQuality.toFixed(1),
+          totalReports: reports.length,
+          trendDirection: velocityTrend.length > 2 ?
+            (velocityTrend[velocityTrend.length - 1].velocity > velocityTrend[0].velocity ? "IMPROVING" : "DECLINING") : "STABLE"
+        }
+      };
+
+      res.json(performanceTrends);
+    } catch (error) {
+      console.error("Error fetching performance trends:", error);
+      res.status(500).json({ error: "Failed to fetch performance trends" });
+    }
+  });
+
+  // Enhanced Analytics endpoints with ML-powered insights
   app.get("/api/analytics/overview", async (req, res) => {
     try {
       const projects = await storage.getProjects();
-      const totalProjects = projects.length;
-      const activeProjects = projects.filter(p => p.status === "active").length;
-      const delayedProjects = projects.filter(p => p.status === "delayed" || p.status === "critical").length;
-      const totalBudget = projects.reduce((sum, p) => sum + parseFloat(p.totalBudget), 0);
 
-      res.json({
-        totalProjects,
-        activeProjects,
-        delayedProjects,
-        totalBudget,
-      });
+      // Get projects with relations for comprehensive analytics
+      const projectsWithRelations = await Promise.all(
+        projects.map(async (project) => {
+          return await storage.getProject(project.id);
+        })
+      );
+
+      // Filter out any null results
+      const validProjects = projectsWithRelations.filter((p): p is NonNullable<typeof p> => p !== null);
+
+      // Get comprehensive analytics data
+      const analyticsData = await generateComprehensiveAnalytics(validProjects);
+
+      res.json(analyticsData);
     } catch (error) {
+      console.error("Error fetching analytics overview:", error);
       res.status(500).json({ error: "Failed to fetch analytics overview" });
     }
   });

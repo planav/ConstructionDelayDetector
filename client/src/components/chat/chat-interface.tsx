@@ -15,6 +15,7 @@ export default function ChatInterface() {
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: projects } = useQuery<Project[]>({
@@ -24,20 +25,27 @@ export default function ChatInterface() {
   const { data: chatMessages, isLoading: messagesLoading } = useQuery<ChatMessage[]>({
     queryKey: ["/api/projects", selectedProjectId, "chat"],
     enabled: !!selectedProjectId,
+    staleTime: 0, // Always consider data stale for chat messages
+    refetchOnWindowFocus: true, // Refetch when window gains focus
   });
 
   const sendMessageMutation = useMutation({
     mutationFn: async (messageText: string) => {
+      setSendingMessage(messageText);
       const response = await apiRequest("POST", `/api/projects/${selectedProjectId}/chat`, {
         message: messageText,
       });
       return response.json();
     },
     onSuccess: () => {
+      // Invalidate and refetch chat messages
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "chat"] });
+      queryClient.refetchQueries({ queryKey: ["/api/projects", selectedProjectId, "chat"] });
       setMessage("");
+      setSendingMessage("");
     },
     onError: (error: any) => {
+      setSendingMessage("");
       toast({
         title: "Error",
         description: error.message || "Failed to send message. Please try again.",
@@ -135,7 +143,8 @@ export default function ChatInterface() {
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
                 </div>
               ) : chatMessages && chatMessages.length > 0 ? (
-                chatMessages.map((msg, index) => (
+                <>
+                  {chatMessages.map((msg, index) => (
                   <div key={msg.id || index} className="flex items-start space-x-3">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
                       msg.isFromUser ? "bg-blue-500" : "bg-gray-600"
@@ -159,7 +168,41 @@ export default function ChatInterface() {
                       </p>
                     </div>
                   </div>
-                ))
+                  ))}
+
+                  {/* Show loading indicator when sending message */}
+                  {sendMessageMutation.isPending && (
+                    <div className="flex items-start space-x-3">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center bg-blue-500">
+                        <User className="text-white text-sm" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="rounded-lg p-3 bg-gray-100">
+                          <p className="text-sm text-gray-900">{sendingMessage}</p>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">Sending...</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Show AI thinking indicator */}
+                  {sendMessageMutation.isPending && (
+                    <div className="flex items-start space-x-3">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-600">
+                        <Bot className="text-white text-sm" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="rounded-lg p-3 bg-blue-50">
+                          <div className="flex items-center space-x-2">
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                            <p className="text-sm text-gray-900">AI is thinking...</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">Processing your request</p>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : selectedProjectId ? (
                 <div className="text-center py-8 text-gray-500">
                   <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />
